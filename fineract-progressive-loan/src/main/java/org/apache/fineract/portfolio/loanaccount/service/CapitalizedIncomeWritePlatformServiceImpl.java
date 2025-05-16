@@ -76,12 +76,12 @@ public class CapitalizedIncomeWritePlatformServiceImpl implements CapitalizedInc
         final Money capitalizedIncomeAmount = calculateCapitalizedIncomeAmount(loan, transactionAmount);
         final LoanTransaction capitalizedIncomeTransaction = LoanTransaction.capitalizedIncome(loan, capitalizedIncomeAmount, paymentDetail,
                 transactionDate, txnExternalId);
+        // Create capitalized income balances
+        createCapitalizedIncomeBalance(capitalizedIncomeTransaction);
         // Update loan with capitalized income
         loan.addLoanTransaction(capitalizedIncomeTransaction);
         // Recalculate loan transactions
         recalculateLoanTransactions(loan, transactionDate, capitalizedIncomeTransaction);
-        // Create capitalized income balances
-        createCapitalizedIncomeBalance(capitalizedIncomeTransaction);
         // Save and flush (PK is set)
         loanTransactionRepository.saveAndFlush(capitalizedIncomeTransaction);
         // Update loan counters and save
@@ -129,6 +129,6 @@ public class CapitalizedIncomeWritePlatformServiceImpl implements CapitalizedInc
         capitalizedIncomeBalance.setDate(capitalizedIncomeTransaction.getTransactionDate());
         capitalizedIncomeBalance.setAmount(capitalizedIncomeTransaction.getAmount());
         capitalizedIncomeBalance.setUnrecognizedAmount(capitalizedIncomeTransaction.getAmount());
-        capitalizedIncomeBalanceRepository.save(capitalizedIncomeBalance);
+        capitalizedIncomeBalanceRepository.saveAndFlush(capitalizedIncomeBalance);
     }
 }
