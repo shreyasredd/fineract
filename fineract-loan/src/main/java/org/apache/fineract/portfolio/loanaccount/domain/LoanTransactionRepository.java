@@ -18,12 +18,15 @@
  */
 package org.apache.fineract.portfolio.loanaccount.domain;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.apache.fineract.infrastructure.core.domain.ExternalId;
 import org.apache.fineract.portfolio.loanaccount.data.LoanScheduleDelinquencyData;
+import org.apache.fineract.portfolio.loanaccount.data.TransactionPortionsForForeclosure;
 import org.apache.fineract.portfolio.loanaccount.data.UnpaidChargeData;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
@@ -37,25 +40,7 @@ public interface LoanTransactionRepository extends JpaRepository<LoanTransaction
 
     Optional<LoanTransaction> findByIdAndLoanId(Long transactionId, Long loanId);
 
-    @Query("""
-            SELECT lt FROM LoanTransaction lt
-            WHERE lt.loan.id = :loanId
-            AND lt.typeOf IN :transactionTypes
-            AND lt.id NOT IN :existingTransactionIds
-            AND lt.reversed = false
-            """)
-    List<LoanTransaction> findNewTransactionsByLoanIdAndTypeAndNotInIds(@Param("loanId") Long loanId,
-            @Param("transactionTypes") List<LoanTransactionType> transactionTypes,
-            @Param("existingTransactionIds") List<Long> existingTransactionIds);
-
-    @Query("""
-            SELECT lt FROM LoanTransaction lt
-            WHERE lt.loan.id = :loanId
-            AND lt.typeOf IN :transactionTypes
-            AND lt.reversed = false
-            """)
-    List<LoanTransaction> findNewTransactionsByLoanIdAndType(@Param("loanId") Long loanId,
-            @Param("transactionTypes") List<LoanTransactionType> transactionTypes);
+    List<LoanTransaction> findByLoan(Loan loan);
 
     @Query("""
             SELECT new org.apache.fineract.portfolio.loanaccount.data.LoanScheduleDelinquencyData(
@@ -90,6 +75,57 @@ public interface LoanTransactionRepository extends JpaRepository<LoanTransaction
 
     @Query(FIND_LOAN_ID_BY_ID)
     Optional<Long> findLoanIdById(@Param("id") Long id);
+
+    @Query("""
+                SELECT COALESCE(SUM(lt.unrecognizedIncomePortion), 0)
+                FROM LoanTransaction lt
+                WHERE lt.loan = :loan
+                AND lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.WAIVE_INTEREST
+                AND lt.reversed = false
+                AND lt.dateOf <= :toDate
+            """)
+    BigDecimal findTotalUnrecognizedIncomeFromInterestWaiverByLoanAndDate(@Param("loan") Loan loan, @Param("toDate") LocalDate toDate);
+
+    @Query("""
+            SELECT COALESCE(SUM(CASE WHEN lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.ACCRUAL THEN lt.interestPortion
+                 WHEN lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.ACCRUAL_ADJUSTMENT THEN -lt.interestPortion
+                 ELSE 0 END), 0)
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+            AND lt.reversed = false
+            """)
+    BigDecimal findTotalInterestAccruedAmount(@Param("loan") Loan loan);
+
+    @Query("""
+            SELECT lt
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND (lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.ACCRUAL
+                    OR lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.ACCRUAL_ADJUSTMENT)
+            """)
+    List<LoanTransaction> findAccrualTransactions(@Param("loan") Loan loan);
+
+    @Query("""
+            SELECT lt
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.INCOME_POSTING
+            """)
+    List<LoanTransaction> findIncomePostingTransactions(@Param("loan") Loan loan);
+
+    @Query("""
+            SELECT COALESCE(SUM(lt.interestPortion), 0)
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.ACCRUAL
+                AND lt.dateOf > :fromDate
+                AND lt.dateOf <= :dueDate
+            """)
+    BigDecimal findAccrualInterestInPeriod(@Param("loan") Loan loan, @Param("fromDate") LocalDate fromDate,
+            @Param("dueDate") LocalDate dueDate);
 
     @Query("""
             SELECT CASE WHEN COUNT(lt) > 0 THEN false ELSE true END
@@ -132,5 +168,78 @@ public interface LoanTransactionRepository extends JpaRepository<LoanTransaction
             AND lt.reversed = true
             """)
     List<Long> findReversedTransactionIdsByLoan(@Param("loan") Loan loan);
+
+    @Query("""
+            SELECT
+                lt.typeOf AS transactionType,
+                lt.interestPortion AS interestPortion,
+                lt.feeChargesPortion AS feeChargesPortion,
+                lt.penaltyChargesPortion AS penaltyChargesPortion
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+            AND lt.reversed = false
+            AND lt.dateOf <= :tillDate
+            AND lt.typeOf NOT IN (
+                org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.DISBURSEMENT,
+                org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.REPAYMENT_AT_DISBURSEMENT
+            )
+            ORDER BY lt.dateOf
+            """)
+    List<TransactionPortionsForForeclosure> findTransactionDataForForeclosureIncome(@Param("loan") Loan loan,
+            @Param("tillDate") LocalDate tillDate);
+
+    @Query("""
+            SELECT lt
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND lt.typeOf IN :types
+                AND lt.dateOf = :transactionDate
+            """)
+    Optional<LoanTransaction> findByLoanAndByTypesAndByDate(@Param("loan") Loan loan, @Param("type") Set<LoanTransactionType> types,
+            @Param("transactionDate") LocalDate transactionDate);
+
+    @Query("""
+            SELECT lt
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND lt.typeOf IN :types
+                AND lt.dateOf > :transactionDate
+            ORDER BY lt.dateOf
+            """)
+    List<LoanTransaction> findByLoanAndTypesAndAfterDate(@Param("loan") Loan loan, @Param("types") Set<LoanTransactionType> types,
+            @Param("transactionDate") LocalDate transactionDate);
+
+    @Query("""
+            SELECT CASE WHEN COUNT(lt) > 0 THEN true ELSE false END
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND (lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.ACCRUAL
+                    OR lt.typeOf = org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType.ACCRUAL_ADJUSTMENT)
+                AND lt.dateOf >= :accrualDate
+            """)
+    boolean existsAccrualTransactionsOnOrAfterDate(@Param("loan") Loan loan, @Param("accrualDate") LocalDate accrualDate);
+
+    @Query("""
+            SELECT lt
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND lt.typeOf IN :types
+                AND lt.id NOT IN :existingTransactionIds
+            """)
+    List<LoanTransaction> findNonReversedByTypesAndNotInIds(@Param("loan") Loan loan, @Param("types") Set<LoanTransactionType> types,
+            @Param("existingTransactionIds") List<Long> existingTransactionIds);
+
+    @Query("""
+            SELECT lt
+            FROM LoanTransaction lt
+            WHERE lt.loan = :loan
+                AND lt.reversed = false
+                AND lt.typeOf IN :types
+            """)
+    List<LoanTransaction> findNonReversedByTypes(@Param("loan") Loan loan, @Param("types") Set<LoanTransactionType> types);
 
 }
